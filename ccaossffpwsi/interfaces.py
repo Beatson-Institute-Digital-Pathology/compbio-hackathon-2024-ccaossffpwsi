@@ -27,13 +27,6 @@ class Abstract_Reader(ABC):
     #     """
     #     pass
 
-    # @abstractmethod
-    # def get_metadata(self) -> dict:
-    #     """
-    #     A function that will return the available meta-data for the image as a dict.
-    #     """
-    #     pass
-
     @abstractmethod
     def generate_coordinates(self) -> List[Tuple[int]]:
         pass
@@ -41,41 +34,46 @@ class Abstract_Reader(ABC):
 
 SLIDE_ARR = None
 
-def read_tile_multithreading(args:Tuple):
+
+def read_tile_multithreading(args: Tuple):
     global SLIDE_ARR
     coords, file_path, read_fn = args
     target_tile = read_fn(file_path, coords)
     SLIDE_ARR[coords[0]:coords[1], coords[2]:coords[3], :] = target_tile
 
 def read_by_openslide(file_path, coords):
-    slide = ops.Openslide(file_path)
+    slide = ops.OpenSlide(file_path)
     tile_size = abs(int(coords[3]-coords[2]))
 
-    tile = slide.read_region((coords[1], coords[0]), 0, (tile_size, tile_size))
+    tile = slide.read_region((coords[2], coords[0]), 0, (tile_size, tile_size))
+    tile = tile.convert("RGB")
     return tile
-    
+
+
+def get_metadata_by_openslide(file_path):
+    slide = ops.OpenSlide(file_path)
+    metadata = {
+        "shape": (slide.dimensions[1], slide.dimensions[0], 3),
+        "level_count": slide.level_count,
+        "level_dimensions": [(y, x) for (x,y) in slide.level_dimensions],
+        "level_downsamples": slide.level_downsamples,
+        "properties": slide.properties,
+    }
+    return metadata
 
 class Reader(Abstract_Reader):
 
     def __init__(
             self,
             tile_size: int = 224,
-            reading_method: Callable = read_by_openslide,
+            read_image_method: Callable = read_by_openslide,
+            read_metadata_method: Callable = get_metadata_by_openslide
     ) -> None:
         self.tile_size = tile_size
-        self.reading_method = reading_method
+        self.reading_method = read_image_method
+        self.get_metadata = read_metadata_method
         self.max_workers = 16
 
-    def get_metadata(self, file_path):
-        slide = ops.OpenSlide(file_path)
-        metadata = {
-            "shape": slide.dimensions,
-            "level_count": slide.level_count,
-            "level_dimensions": slide.level_dimensions,
-            "level_downsamples": slide.level_downsamples,
-            "properties": slide.properties
-        }
-        return metadata
 
     def read_image(self, file_path: str | Path) -> np.ndarray:
         global SLIDE_ARR
@@ -88,11 +86,10 @@ class Reader(Abstract_Reader):
         args = [(coord, file_path, self.reading_method) for coord in coordinates]
 
         #execute in parallel
-        SLIDE_ARR = np.full(slide_shape, 255)
+        SLIDE_ARR = np.full(slide_shape, 255, dtype=np.uint8)
 
         thread_map(read_tile_multithreading, args, chunksize=1, max_workers=self.max_workers)
 
-        
         return SLIDE_ARR
 
         
@@ -117,13 +114,13 @@ class Reader(Abstract_Reader):
             x_end = bounds[3]
 
         coordinates = []
-        for row in range(y_start, y_end, self.tile_size[0]):
-            for col in range(x_start, x_end, self.tile_size[1]):
-                if row + self.tile_size[0] > y_end:
-                    row = y_end - self.tile_size[0]
-                if col + self.tile_size[1] > x_end:
-                    col = x_end - self.tile_size[1]
+        for row in range(y_start, y_end, self.tile_size):
+            for col in range(x_start, x_end, self.tile_size):
+                if row + self.tile_size > y_end:
+                    row = y_end - self.tile_size
+                if col + self.tile_size > x_end:
+                    col = x_end - self.tile_size
 
-                coordinates.append((row, row+self.tile_size[0], col, col+self.tile_size[1]))
+                coordinates.append((row, row+self.tile_size, col, col+self.tile_size))
 
         return coordinates
